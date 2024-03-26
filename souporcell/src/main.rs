@@ -37,10 +37,11 @@ fn main() {
     let cell_barcodes = load_barcodes(&params); 
     let (ground_truth_barcode_to_assignment, ground_truth_barcode_and_assignments) = load_ground_truth(&params).unwrap();
 
-    let (loci_used, cells, coefficients, cell_index_to_locus_counts, i) = beta_binomial_load_cell_data(&params, ground_truth_barcode_to_assignment.clone(), cell_barcodes.clone());
+    let (loci_used, cells, coefficients, cell_index_to_locus_counts, for_test) = beta_binomial_load_cell_data(&params, ground_truth_barcode_to_assignment.clone(), cell_barcodes.clone());
     //(locus_to_locus_index.len(), cell_structs_vec, cell_index_to_coefficients, cell_index_to_locus_counts, index_to_locus_map)
 
     beta_binomial_souporcell(loci_used, cells, coefficients, cell_index_to_locus_counts, &params);
+
 
 
     // let (loci_used, total_cells, cell_data, index_to_locus, locus_to_index) = load_cell_data(&params);
@@ -235,6 +236,7 @@ fn normalize_in_log(log_probs: &Vec<f32>) -> Vec<f32> { // takes in a log_probab
     }
     normalized_probabilities
 }
+
 
 fn normalize_in_log_with_temp(log_probs: &Vec<f32>, temp: f32) -> Vec<f32> {
     let mut normalized_probabilities: Vec<f32> = Vec::new();
@@ -839,38 +841,102 @@ fn beta_binomial_souporcell( loci: usize, cells: Vec<CellStruct>, coefficients :
 
     let (total_beta_binomial_log_loss, final_beta_binomial_log_probabilities) = beta_binomial_EM(loci, &cells, params, &beta_centers, coefficients, cell_index_to_locus_counts);
 
-    println!("total_beta_binomial_log_loss: {}", total_beta_binomial_log_loss);
-
-    //thirnd is to display the output
 
 }
 
 
 fn beta_binomial_EM(loci: usize, cells: &Vec<CellStruct>, params: &Params, beta_centers: &Vec<Vec<(f32, f32)>>,
     coefficients: Vec<Vec<f32>>, cell_index_to_locus_counts: Vec<Vec<[usize; 3]>>)
--> (f32, Vec<Vec<f32>>){
+-> (f32, Vec<Vec<f64>>){
 
-
+    //defult is negative infinity
     let mut total_beta_binomial_log_loss = f32::NEG_INFINITY;
     let mut final_beta_binomial_log_probabilities = Vec::new();
+    let num_clusters = params.num_clusters;
+    //wanna get the log of 1'/num_clusters to be prior
+    let beta_binomial_log_prior = (1.0/(num_clusters as f64)).ln();
 
-
-    for _ in 0..cells.len() {
-        final_beta_binomial_log_probabilities.push(vec![0.0; params.num_clusters]);
+    for _cell in 0..cells.len() {
+        final_beta_binomial_log_probabilities.push(Vec::new());
     }
 
 
     for (cell_index, cell_counts) in cell_index_to_locus_counts.iter().enumerate() {
 
-        final_beta_binomial_log_probabilities[cell_index] = vec![0.0; params.num_clusters];
-        
+        let cell_coefficient = coefficients[cell_index].clone();
+        let cell_loci = &cell_counts;
+        let cell_log_beta_binomial_probablility = log_beta_binomial_loss(beta_centers, cell_coefficient , cell_loci, num_clusters, beta_binomial_log_prior);
+        final_beta_binomial_log_probabilities[cell_index] = normalize_in_log_64(&cell_log_beta_binomial_probablility);
 
 
+    }
+
+    //wanna print the probabilities of each cell to each cluster
+    for (cell_index, cell) in cells.iter().enumerate() {
+        eprintln!("Cell: {}", cell.barcode);
+        for (cluster, probability) in final_beta_binomial_log_probabilities[cell_index].iter().enumerate() {
+            eprintln!("Cluster: {} Probability: {}", cluster, probability);
+        }
     }
 
 
     (total_beta_binomial_log_loss, final_beta_binomial_log_probabilities)
 }
+
+
+fn log_beta_binomial_loss(beta_centers: &Vec<Vec<(f32, f32)>>, coefficient: Vec<f32>, cell_loci: &Vec<[usize; 3]>,
+    num_clusters: usize, beta_binomial_log_prior: f64)
+     -> Vec<f64>{
+
+    let mut cell_log_beta_binomial_probablility: Vec<f64> = Vec::new();
+
+    for (cluster, beta_center) in beta_centers.iter().enumerate() {
+
+        cell_log_beta_binomial_probablility.push(beta_binomial_log_prior);
+        
+        for (inner_locus_index, locus) in cell_loci.iter().enumerate() {
+
+            let ref_count = locus[1];
+            let alt_count = locus[2];
+            let  locus_index = locus[0];
+            let alpha = beta_center[locus_index].0;
+            let beta = beta_center[locus_index].1;
+            let locus_coefficient = coefficient[inner_locus_index];
+            cell_log_beta_binomial_probablility[cluster] += log_beta_binomial_PMF(ref_count, alt_count, alpha, beta, locus_coefficient);
+        }
+
+    }
+
+    cell_log_beta_binomial_probablility
+
+}
+
+
+fn log_beta_binomial_PMF(ref_count: usize, alt_count: usize, alpha: f32, beta: f32, locus_coefficient: f32) -> f64 {
+
+    let num_term_1 = alpha + alt_count as f32;
+    let num_term_2 = beta + ref_count as f32;
+    let num = log_beta_calc( num_term_1 as f64, num_term_2  as f64);
+    let denum = log_beta_calc(alpha as f64, beta as f64);
+    let log_beta_binomial_PMF = num - denum + locus_coefficient as f64;
+
+    log_beta_binomial_PMF as f64
+
+}
+
+
+fn log_beta_calc(alpha: f64, beta: f64) -> f64 {
+
+    let log_gamma_alpha = statrs::function::gamma::ln_gamma(alpha as f64);
+    let log_gamma_beta = statrs::function::gamma::ln_gamma(beta as f64);
+    let log_gamma_alpha_beta = statrs::function::gamma::ln_gamma((alpha + beta) as f64);
+    let log_beta_calc = log_gamma_alpha + log_gamma_beta - log_gamma_alpha_beta;
+    log_beta_calc 
+}
+
+
+
+
 
 
 fn init_alpha_beta_cluster_centers(loci: usize, params: &Params, rng: &mut StdRng) -> Vec<Vec<(f32, f32)>> {
@@ -891,4 +957,22 @@ fn init_alpha_beta_cluster_centers(loci: usize, params: &Params, rng: &mut StdRn
     }
 
     beta_centers
+}
+
+
+
+fn normalize_in_log_64(log_probs: &Vec<f64>) -> Vec<f64> { // takes in a log_probability vector and converts it to a normalized probability
+    let mut normalized_probabilities: Vec<f64> = Vec::new();
+    let sum = log_sum_exp_64(log_probs);
+    for i in 0..log_probs.len() {
+        normalized_probabilities.push((log_probs[i] - sum).exp());
+    }
+    normalized_probabilities
+}
+
+
+fn log_sum_exp_64(p: &Vec<f64>) -> f64 {
+    let max_p: f64 = p.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let sum_rst: f64 = p.iter().map(|x| (x - max_p).exp()).sum();
+    max_p + sum_rst.ln()
 }
