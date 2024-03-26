@@ -628,3 +628,158 @@ fn new_seed(rng: &mut StdRng) -> [u8; 32] {
     }
     seed
 }
+
+
+
+// Beta Binomial implementation part:
+
+fn beta_binomial_load_cell_data(params: &Params, ground_truth_barcode_to_assignment: HashMap<String, String>, cell_barcodes: Vec<String>) 
+-> (usize, Vec<CellStruct>, Vec<Vec<f32>>, Vec<Vec<[usize; 3]>>, HashMap<usize, usize>){
+
+    let alt_reader = File::open(params.alt_mtx.to_string()).expect("cannot open alt mtx file");
+    let ref_reader = File::open(params.ref_mtx.to_string()).expect("cannot open ref mtx file");
+
+    let alt_reader = BufReader::new(alt_reader);
+    let ref_reader = BufReader::new(ref_reader);
+
+
+    let mut total_loci = 0;
+    let mut total_cells = 0;
+    let mut line_number = 0;
+    let mut locus_to_locus_index: HashMap<usize, usize> = HashMap::new();
+    let mut locus_alt_ref_cell_counts: HashMap<usize, [u32; 2]> = HashMap::new();
+    let mut unique_cell_ids: HashSet<usize> = HashSet::new();
+    let mut cell_index = 0;
+    let mut cell_id_to_barcode_index: HashMap<usize, usize> = HashMap::new();
+    let mut cell_id_to_locus_counts: HashMap<usize, Vec<[usize; 3]>> = HashMap::new();
+
+
+    
+
+    //Loading loci
+    eprintln!("loading loci...");
+    for (alt_line, ref_line) in izip!(alt_reader.lines(), ref_reader.lines()) {
+        let alt_line = alt_line.expect("cannot read alt mtx");
+        let ref_line = ref_line.expect("cannot read ref mtx");
+        if line_number > 2 {
+
+            let alt_tokens: Vec<&str> = alt_line.split_whitespace().collect();
+            let ref_tokens: Vec<&str> = ref_line.split_whitespace().collect();
+
+            let locus = alt_tokens[0].to_string().parse::<usize>().unwrap() - 1; // 0-indexed Locus_ID
+            let ref_count = ref_tokens[2].to_string().parse::<u32>().unwrap();
+            let alt_count = alt_tokens[2].to_string().parse::<u32>().unwrap();
+
+            assert!(locus < total_loci);
+
+            let temp_count = locus_alt_ref_cell_counts.entry(locus).or_insert([0; 2]);
+            if ref_count > 0 { temp_count[0] += 1; }
+            if alt_count > 0 { temp_count[1] += 1; }
+
+            // obtaining cell_id to 1-generate index 2-sort in order to acces barcodes.
+            let cell = alt_tokens[1].to_string().parse::<usize>().unwrap() - 1; // 0-indexed Cell_ID
+            assert!(cell < total_cells);
+            unique_cell_ids.insert(cell);
+
+            if ref_count + alt_count > 0 {
+            cell_id_to_locus_counts.entry(cell).or_insert(Vec::new()).push([locus, ref_count as usize, alt_count as usize]);
+            }
+
+            
+        } else if line_number == 2 {
+            let tokens: Vec<&str> = alt_line.split_whitespace().collect();
+            total_loci = tokens[0].to_string().parse::<usize>().unwrap();
+            total_cells = tokens[1].to_string().parse::<usize>().unwrap();
+        }
+        line_number += 1;
+    }
+
+    eprintln!("filtering loci...");
+
+    let mut locus_index = 0;
+    let mut index_to_locus_map : HashMap<usize, usize> = HashMap::new();
+
+    for (locus, counts) in &locus_alt_ref_cell_counts {
+        if counts[0] >= params.min_ref && counts[1] >= params.min_alt {
+            locus_to_locus_index.insert(*locus, locus_index);
+            index_to_locus_map.insert(locus_index, *locus);
+            locus_index += 1;
+        }
+    }
+
+    eprintln!("loading cell data...");
+
+    
+
+
+    let mut sorted_cell_ids: Vec<usize> = Vec::new();
+    for cell_id in unique_cell_ids.iter() {
+        sorted_cell_ids.push(*cell_id);
+    }
+    sorted_cell_ids.sort();
+
+    let mut cell_structs_vec: Vec<CellStruct> = Vec::new();
+    let mut cell_index_to_coefficients: Vec<Vec<f32>> = Vec::new(); // cell_id to a vec of log binomial coefficients indexed based ob locus_index of the cell data
+    let mut cell_index_to_locus_counts: Vec<Vec<[usize; 3]>> = Vec::new(); // cell_id to a vec of locus counts indexed based ob locus_index of the cell data
+
+
+    let mut cell_id_to_cell_index : HashMap<usize, usize> = HashMap::new();
+
+
+
+    for (cell_index, cell_id) in sorted_cell_ids.iter().enumerate() {
+
+        cell_id_to_cell_index.insert(*cell_id, cell_index);
+        let barcode = cell_barcodes[cell_index].clone();
+        let ground_truth = ground_truth_barcode_to_assignment.get(&barcode).map_or_else(|| "N".to_string(), |s| s.clone());
+        cell_structs_vec.push(CellStruct::new(*cell_id, barcode, ground_truth));
+
+        //loop over loci for this cell
+        let mut alt_ref_counts: Vec<[usize; 3]> = Vec::new();
+        let mut coefficients: Vec<f32> = Vec::new();
+
+        let locus_counts = cell_id_to_locus_counts.get(cell_id).unwrap();
+        for (inner_cell_locus_index, locus_count) in locus_counts.iter().enumerate() {
+
+            
+            if locus_to_locus_index.contains_key(&locus_count[0]) {
+
+                let locus = locus_to_locus_index.get(&locus_count[0]).unwrap();
+                let ref_count = locus_count[1];
+                let alt_count = locus_count[2];
+                let coefficient = statrs::function::factorial::ln_binomial((ref_count + alt_count) as u64, alt_count as u64) as f32;
+                coefficients.push(coefficient);
+                alt_ref_counts.push([*locus, ref_count, alt_count]);
+
+            }
+        
+        }         
+
+        
+        cell_index_to_locus_counts.push(alt_ref_counts);
+        cell_index_to_coefficients.push(coefficients);
+    }
+
+
+    (locus_to_locus_index.len(), cell_structs_vec, cell_index_to_coefficients, cell_index_to_locus_counts, index_to_locus_map)
+
+
+}
+
+
+#[derive(Clone)]
+struct CellStruct {
+    barcode: String,
+    ground_truth: String,
+    cell_id: usize,
+}
+
+impl CellStruct {
+    fn new(ID: usize, barcode: String, ground_truth: String) -> CellStruct {
+        CellStruct{
+            cell_id: ID,
+            barcode: barcode,
+            ground_truth: ground_truth,
+        }
+    }
+}
