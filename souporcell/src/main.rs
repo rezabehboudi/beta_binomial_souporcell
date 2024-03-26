@@ -32,10 +32,14 @@ use hashbrown::{HashMap,HashSet};
 use itertools::izip;
 
 fn main() {
+
     let params = load_params();
     let cell_barcodes = load_barcodes(&params); 
-    let (loci_used, total_cells, cell_data, index_to_locus, locus_to_index) = load_cell_data(&params);
-    souporcell_main(loci_used, cell_data, &params, cell_barcodes, locus_to_index);
+    let (ground_truth_barcode_to_assignment, ground_truth_barcode_and_assignments) = load_ground_truth(&params).unwrap();
+
+
+    // let (loci_used, total_cells, cell_data, index_to_locus, locus_to_index) = load_cell_data(&params);
+    // souporcell_main(loci_used, cell_data, &params, cell_barcodes, locus_to_index);
 }
 
 struct ThreadData {
@@ -530,6 +534,7 @@ struct Params {
     initialization_strategy: ClusterInit,
     threads: usize,
     seed: u8,
+    ground_truth: String, // NEW
 }
 
 #[derive(Clone)]
@@ -602,6 +607,9 @@ fn load_params() -> Params {
     let min_alt_umis = params.value_of("min_alt_umis").unwrap_or("0");
     let min_alt_umis = min_alt_umis.to_string().parse::<u32>().unwrap();
 
+    let ground_truth = params.value_of("ground_truth").unwrap_or("None");
+
+
     Params{
         ref_mtx: ref_mtx.to_string(),
         alt_mtx: alt_mtx.to_string(),
@@ -618,6 +626,7 @@ fn load_params() -> Params {
         seed: seed,
         min_alt_umis: min_alt_umis,
         min_ref_umis: min_ref_umis,
+        ground_truth: ground_truth.to_string(),
     }
 }
 
@@ -782,4 +791,35 @@ impl CellStruct {
             ground_truth: ground_truth,
         }
     }
+}
+
+
+
+fn load_ground_truth(params: &Params) -> io::Result<(HashMap<String, String>, Vec<Vec<String>>)> {
+
+    eprintln!("Loading ground truth");
+    let reader = reader(&params.ground_truth);
+    let mut ground_truth_map: HashMap<String, String> = HashMap::new();
+    let mut ground_truth_vec: Vec<Vec<String>> = Vec::new();
+
+    for line_result in reader.lines() {
+        let line = line_result.expect("Unable to read a line in the ground truth file");
+        let columns: Vec<&str> = line.split('\t').collect(); 
+
+        if columns.len() == 2 {
+
+            let barcode = columns[0].to_string();
+            let assignment = columns[1].to_string();
+
+            ground_truth_map.insert(barcode.clone(), assignment.clone());
+            ground_truth_vec.push(vec![barcode, assignment]);
+
+        } else {
+
+            eprintln!("Invalid line format: {}", line);
+            eprintln!("The correct format is: barcode\tassignment");
+        }
+    }
+
+    Ok((ground_truth_map, ground_truth_vec))
 }
