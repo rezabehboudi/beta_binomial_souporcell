@@ -37,6 +37,11 @@ fn main() {
     let cell_barcodes = load_barcodes(&params); 
     let (ground_truth_barcode_to_assignment, ground_truth_barcode_and_assignments) = load_ground_truth(&params).unwrap();
 
+    let (loci_used, cells, coefficients, cell_index_to_locus_counts, i) = beta_binomial_load_cell_data(&params, ground_truth_barcode_to_assignment.clone(), cell_barcodes.clone());
+    //(locus_to_locus_index.len(), cell_structs_vec, cell_index_to_coefficients, cell_index_to_locus_counts, index_to_locus_map)
+
+    beta_binomial_souporcell(loci_used, cells, coefficients, cell_index_to_locus_counts, &params);
+
 
     // let (loci_used, total_cells, cell_data, index_to_locus, locus_to_index) = load_cell_data(&params);
     // souporcell_main(loci_used, cell_data, &params, cell_barcodes, locus_to_index);
@@ -729,7 +734,7 @@ fn beta_binomial_load_cell_data(params: &Params, ground_truth_barcode_to_assignm
 
     let mut cell_structs_vec: Vec<CellStruct> = Vec::new();
     let mut cell_index_to_coefficients: Vec<Vec<f32>> = Vec::new(); // cell_id to a vec of log binomial coefficients indexed based ob locus_index of the cell data
-    let mut cell_index_to_locus_counts: Vec<Vec<[usize; 3]>> = Vec::new(); // cell_id to a vec of locus counts indexed based ob locus_index of the cell data
+    let mut cell_index_to_locus_counts: Vec<Vec<[usize; 3]>> = Vec::new(); // cell_index to a vec of locus counts indexed based ob locus_index of the cell data
 
 
     let mut cell_id_to_cell_index : HashMap<usize, usize> = HashMap::new();
@@ -822,4 +827,68 @@ fn load_ground_truth(params: &Params) -> io::Result<(HashMap<String, String>, Ve
     }
 
     Ok((ground_truth_map, ground_truth_vec))
+}
+
+
+
+fn beta_binomial_souporcell( loci: usize, cells: Vec<CellStruct>, coefficients : Vec<Vec<f32>>, cell_index_to_locus_counts: Vec<Vec<[usize; 3]>>, params: &Params){
+
+    let seed = [params.seed; 32];
+    let mut rng: StdRng = SeedableRng::from_seed(seed);
+    let mut beta_centers = init_alpha_beta_cluster_centers(loci, params, &mut rng);
+
+    let (total_beta_binomial_log_loss, final_beta_binomial_log_probabilities) = beta_binomial_EM(loci, &cells, params, &beta_centers, coefficients, cell_index_to_locus_counts);
+
+    println!("total_beta_binomial_log_loss: {}", total_beta_binomial_log_loss);
+
+    //thirnd is to display the output
+
+}
+
+
+fn beta_binomial_EM(loci: usize, cells: &Vec<CellStruct>, params: &Params, beta_centers: &Vec<Vec<(f32, f32)>>,
+    coefficients: Vec<Vec<f32>>, cell_index_to_locus_counts: Vec<Vec<[usize; 3]>>)
+-> (f32, Vec<Vec<f32>>){
+
+
+    let mut total_beta_binomial_log_loss = f32::NEG_INFINITY;
+    let mut final_beta_binomial_log_probabilities = Vec::new();
+
+
+    for _ in 0..cells.len() {
+        final_beta_binomial_log_probabilities.push(vec![0.0; params.num_clusters]);
+    }
+
+
+    for (cell_index, cell_counts) in cell_index_to_locus_counts.iter().enumerate() {
+
+        final_beta_binomial_log_probabilities[cell_index] = vec![0.0; params.num_clusters];
+        
+
+
+    }
+
+
+    (total_beta_binomial_log_loss, final_beta_binomial_log_probabilities)
+}
+
+
+fn init_alpha_beta_cluster_centers(loci: usize, params: &Params, rng: &mut StdRng) -> Vec<Vec<(f32, f32)>> {
+
+    let mut beta_centers: Vec<Vec<(f32, f32)>> = Vec::new();
+
+    for cluster in 0..params.num_clusters {
+
+        let mut cluster_centers = Vec::new();
+
+        for _ in 0..loci {
+
+            let random_value = rng.gen::<f32>().min(0.9999).max(0.0001);
+            cluster_centers.push((random_value, 1.0 - random_value));
+        }
+
+        beta_centers.push(cluster_centers);
+    }
+
+    beta_centers
 }
